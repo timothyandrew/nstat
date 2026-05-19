@@ -1,36 +1,35 @@
 use std::collections::VecDeque;
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 pub const MAX_SAMPLES: usize = 3600;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Target {
-    Cloudflare,
-    Google,
+#[derive(Clone, Debug)]
+pub struct Target {
+    pub label: String,
+    pub addr: IpAddr,
 }
 
 impl Target {
-    pub fn label(self) -> &'static str {
-        match self {
-            Target::Cloudflare => "1.1.1.1",
-            Target::Google => "8.8.8.8",
-        }
-    }
-
-    pub fn addr(self) -> std::net::IpAddr {
-        match self {
-            Target::Cloudflare => "1.1.1.1".parse().unwrap(),
-            Target::Google => "8.8.8.8".parse().unwrap(),
+    pub fn new(label: impl Into<String>, addr: IpAddr) -> Self {
+        Self {
+            label: label.into(),
+            addr,
         }
     }
 }
 
-pub const TARGETS: [Target; 2] = [Target::Cloudflare, Target::Google];
+pub fn default_targets() -> Vec<Target> {
+    vec![
+        Target::new("1.1.1.1", "1.1.1.1".parse().unwrap()),
+        Target::new("8.8.8.8", "8.8.8.8".parse().unwrap()),
+    ]
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Sample {
     pub t: Instant,
-    pub target: Target,
+    pub target_idx: usize,
     pub rtt: Option<Duration>,
 }
 
@@ -111,6 +110,7 @@ pub struct WifiInfo {
 
 pub struct AppState {
     pub started_at: Instant,
+    pub targets: Vec<Target>,
     pub samples: VecDeque<Sample>,
     pub network_markers: VecDeque<Instant>,
     pub icmp_consecutive_timeouts: u32,
@@ -123,9 +123,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(targets: Vec<Target>) -> Self {
         Self {
             started_at: Instant::now(),
+            targets,
             samples: VecDeque::with_capacity(MAX_SAMPLES),
             network_markers: VecDeque::with_capacity(16),
             icmp_consecutive_timeouts: 0,

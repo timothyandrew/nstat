@@ -21,6 +21,17 @@ cargo run --release
 ./target/release/nstat
 ```
 
+### Custom targets
+
+```sh
+nstat                                 # defaults: 1.1.1.1 and 8.8.8.8
+nstat 9.9.9.9                         # single IP
+nstat 1.1.1.1 8.8.8.8 9.9.9.9         # multiple
+nstat one.one.one.one google.com      # hostnames (resolved at startup)
+```
+
+Each target gets its own color in the 1m line chart. The 10m/1h bar charts show worst-case RTT across all targets per time bucket.
+
 ### Keys
 
 | Key | Action |
@@ -31,8 +42,9 @@ cargo run --release
 ### Other modes
 
 ```sh
-nstat --check    # spawn probes for ~8s, print a summary, exit
-nstat --help     # usage
+nstat --check                # probe for ~8s, print summary, exit
+nstat --check 9.9.9.9        # same, but against custom targets
+nstat --help                 # usage
 ```
 
 `--check` is a quick way to verify connectivity and the WiFi probe before relying on the TUI in a meeting.

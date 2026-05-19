@@ -5,12 +5,14 @@ mod stats;
 mod ui;
 mod wifi;
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
+use tokio::net::lookup_host;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
-use crate::state::AppState;
+use crate::state::{AppState, Target, default_targets};
 
 fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let dir = dirs_log_dir()?;
@@ -48,22 +50,70 @@ fn install_panic_hook() {
     }));
 }
 
+struct Cli {
+    check: bool,
+    help: bool,
+    targets: Vec<String>,
+}
+
+fn parse_args() -> Cli {
+    let mut cli = Cli {
+        check: false,
+        help: false,
+        targets: Vec::new(),
+    };
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--check" | "-c" => cli.check = true,
+            "--help" | "-h" => cli.help = true,
+            _ => cli.targets.push(arg),
+        }
+    }
+    cli
+}
+
+async fn resolve_targets(specs: &[String]) -> anyhow::Result<Vec<Target>> {
+    if specs.is_empty() {
+        return Ok(default_targets());
+    }
+    let mut out = Vec::with_capacity(specs.len());
+    for spec in specs {
+        // Bare IP → use as-is, preserving the user's label exactly. Hostname →
+        // resolve to the first A/AAAA, use the hostname for display.
+        if let Ok(addr) = spec.parse::<IpAddr>() {
+            out.push(Target::new(spec, addr));
+            continue;
+        }
+        let resolved = lookup_host((spec.as_str(), 0))
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to resolve {spec}: {e}"))?
+            .map(|sa| sa.ip())
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no addresses for {spec}"))?;
+        out.push(Target::new(spec, resolved));
+    }
+    Ok(out)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _log_guard = init_logging();
 
-    let mode = std::env::args().nth(1);
-    if matches!(mode.as_deref(), Some("--check") | Some("-c")) {
-        return run_check().await;
-    }
-    if matches!(mode.as_deref(), Some("--help") | Some("-h")) {
+    let cli = parse_args();
+    if cli.help {
         print_help();
         return Ok(());
     }
 
+    let targets = resolve_targets(&cli.targets).await?;
+
+    if cli.check {
+        return run_check(targets).await;
+    }
+
     install_panic_hook();
 
-    let state = Arc::new(RwLock::new(AppState::new()));
+    let state = Arc::new(RwLock::new(AppState::new(targets)));
 
     probe::icmp::spawn_all(state.clone()).await?;
     probe::http::spawn(state.clone()).await?;
@@ -80,9 +130,12 @@ fn print_help() {
     println!("nstat — network health TUI");
     println!();
     println!("USAGE:");
-    println!("    nstat              run the TUI (default)");
-    println!("    nstat --check      run probes for 3s, print summary, exit");
-    println!("    nstat --help       show this message");
+    println!("    nstat [TARGETS]…           run the TUI");
+    println!("    nstat --check [TARGETS]…   probe for ~8s, print summary, exit");
+    println!("    nstat --help               show this message");
+    println!();
+    println!("TARGETS: IP addresses or hostnames to ping. Defaults to 1.1.1.1 and 8.8.8.8");
+    println!("         when no targets are given. Hostnames are resolved once at startup.");
     println!();
     println!("KEYS:");
     println!("    w    cycle time window (1m / 10m / 1h)");
@@ -91,12 +144,14 @@ fn print_help() {
     println!("LOGS: ~/Library/Logs/nstat/nstat.log");
 }
 
-async fn run_check() -> anyhow::Result<()> {
+async fn run_check(targets: Vec<Target>) -> anyhow::Result<()> {
     println!("nstat --check: probing for ~8s…");
-    let state = Arc::new(RwLock::new(AppState::new()));
+    for t in &targets {
+        println!("  target: {} ({})", t.label, t.addr);
+    }
+    let state = Arc::new(RwLock::new(AppState::new(targets)));
     probe::icmp::spawn_all(state.clone()).await?;
     wifi::spawn(state.clone()).await?;
-    // system_profiler is ~7s on macOS 15+, so wait long enough for it to land.
     tokio::time::sleep(std::time::Duration::from_secs(8)).await;
     let s = state.read().await;
     let total = s.samples.len();
@@ -104,9 +159,14 @@ async fn run_check() -> anyhow::Result<()> {
     let oks = total - timeouts;
     println!("samples: {} (ok={} timeout={})", total, oks, timeouts);
     if let Some(last) = s.samples.iter().rev().find(|x| x.rtt.is_some()) {
+        let label = s
+            .targets
+            .get(last.target_idx)
+            .map(|t| t.label.as_str())
+            .unwrap_or("?");
         println!(
             "last ok: {} → {:.1}ms",
-            last.target.label(),
+            label,
             last.rtt.unwrap().as_secs_f64() * 1000.0
         );
     }
@@ -115,7 +175,6 @@ async fn run_check() -> anyhow::Result<()> {
         s.wifi.interface, s.wifi.ssid, s.wifi.rssi_dbm, s.wifi.channel, s.wifi.phy_mode
     );
     if s.wifi.interface.is_none() {
-        // Run an inline probe to surface why parsing failed.
         match wifi::probe_once().await {
             Ok(info) => println!("[direct] {:?}", info),
             Err(e) => println!("[direct] error: {:#}", e),

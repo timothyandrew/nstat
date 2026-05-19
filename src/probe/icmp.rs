@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,7 +7,7 @@ use tokio::sync::RwLock;
 use tokio::time::interval;
 use tracing::{debug, warn};
 
-use crate::state::{AppState, Sample, TARGETS, Target};
+use crate::state::{AppState, Sample};
 
 const PING_INTERVAL: Duration = Duration::from_secs(1);
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
@@ -20,12 +21,21 @@ pub async fn spawn_all(state: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     // including clones — so we share a single Arc<Client> across tasks instead.
     let client = Arc::new(Client::new(&config)?);
 
-    for (i, &target) in TARGETS.iter().enumerate() {
+    let targets: Vec<(usize, IpAddr, String)> = {
+        let s = state.read().await;
+        s.targets
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i, t.addr, t.label.clone()))
+            .collect()
+    };
+
+    for (idx, addr, label) in targets {
         let client = client.clone();
         let state = state.clone();
-        let ident = PingIdentifier(rand::random::<u16>().wrapping_add(i as u16));
+        let ident = PingIdentifier(rand::random::<u16>().wrapping_add(idx as u16));
         tokio::spawn(async move {
-            run_target(client, target, ident, state).await;
+            run_target(client, idx, addr, label, ident, state).await;
         });
     }
     Ok(())
@@ -33,11 +43,13 @@ pub async fn spawn_all(state: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
 async fn run_target(
     client: Arc<Client>,
-    target: Target,
+    target_idx: usize,
+    addr: IpAddr,
+    label: String,
     ident: PingIdentifier,
     state: Arc<RwLock<AppState>>,
 ) {
-    let mut pinger = client.pinger(target.addr(), ident).await;
+    let mut pinger = client.pinger(addr, ident).await;
     pinger.timeout(PING_TIMEOUT);
     let payload = [0u8; 32];
     let mut seq: u16 = 0;
@@ -53,30 +65,31 @@ async fn run_target(
         let rtt = match result {
             Ok((_packet, dur)) => Some(dur),
             Err(SurgeError::Timeout { .. }) => {
-                debug!(target = target.label(), "icmp timeout");
+                debug!(target = %label, "icmp timeout");
                 None
             }
             Err(e) => {
-                warn!(target = target.label(), error = %e, "icmp error");
+                warn!(target = %label, error = %e, "icmp error");
                 None
             }
         };
 
         let sample = Sample {
             t: started,
-            target,
+            target_idx,
             rtt,
         };
         let mut s = state.write().await;
         s.push_sample(sample);
-        update_streak(&mut s, target, rtt.is_none());
+        update_streak(&mut s, rtt.is_none());
     }
 }
 
-fn update_streak(state: &mut AppState, target: Target, timed_out: bool) {
-    if target != Target::Cloudflare {
-        return;
-    }
+/// Global rolling counter: any successful ping from any target resets it; any
+/// timeout from any target ticks it up. With N targets at 1Hz, a threshold of
+/// 5 means roughly 5/N seconds of total failure across the fleet, which is the
+/// right semantics for "all my probes are dead".
+fn update_streak(state: &mut AppState, timed_out: bool) {
     if timed_out {
         state.icmp_consecutive_timeouts = state.icmp_consecutive_timeouts.saturating_add(1);
     } else {

@@ -8,8 +8,21 @@ use ratatui::symbols::Marker;
 use ratatui::text::Span;
 use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType};
 
-use crate::state::{AppState, Sample, Target, TimeWindow};
+use crate::state::{AppState, Sample, TimeWindow};
 use crate::ui::header::health_color;
+
+const TARGET_PALETTE: &[Color] = &[
+    Color::Cyan,
+    Color::LightYellow,
+    Color::LightGreen,
+    Color::LightMagenta,
+    Color::LightBlue,
+    Color::White,
+];
+
+pub fn target_color(idx: usize) -> Color {
+    TARGET_PALETTE[idx % TARGET_PALETTE.len()]
+}
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     let now = Instant::now();
@@ -26,33 +39,32 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             Style::default().fg(Color::White),
         ));
 
-    // Two render paths so we don't carry both sets of vectors in the same scope:
-    // ratatui's Dataset borrows its data slice, so we have to build everything
-    // up front before constructing the Chart.
     match state.window {
         TimeWindow::OneMinute => {
-            let (cf, gg, timeouts, max_ms) = collect_lines(&state.samples, cutoff, now);
+            let (per_target, timeouts, max_ms) =
+                collect_lines(&state.samples, state.targets.len(), cutoff, now);
             let y_max = chart_y_max(max_ms);
-            let datasets = vec![
-                Dataset::default()
-                    .name("1.1.1.1")
-                    .marker(Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Cyan))
-                    .data(&cf),
-                Dataset::default()
-                    .name("8.8.8.8")
-                    .marker(Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::LightYellow))
-                    .data(&gg),
+            let mut datasets: Vec<Dataset> = state
+                .targets
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    Dataset::default()
+                        .name(t.label.clone())
+                        .marker(Marker::Braille)
+                        .graph_type(GraphType::Line)
+                        .style(Style::default().fg(target_color(i)))
+                        .data(&per_target[i])
+                })
+                .collect();
+            datasets.push(
                 Dataset::default()
                     .name("timeout")
                     .marker(Marker::Dot)
                     .graph_type(GraphType::Scatter)
                     .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
                     .data(&timeouts),
-            ];
+            );
             frame.render_widget(
                 build_chart(datasets, block, window_secs, y_max, state.window),
                 area,
@@ -127,11 +139,11 @@ fn bucket_count(w: TimeWindow) -> usize {
 
 fn collect_lines(
     samples: &VecDeque<Sample>,
+    target_count: usize,
     cutoff: Instant,
     now: Instant,
-) -> (Vec<(f64, f64)>, Vec<(f64, f64)>, Vec<(f64, f64)>, f64) {
-    let mut cf = Vec::new();
-    let mut gg = Vec::new();
+) -> (Vec<Vec<(f64, f64)>>, Vec<(f64, f64)>, f64) {
+    let mut per_target: Vec<Vec<(f64, f64)>> = (0..target_count).map(|_| Vec::new()).collect();
     let mut to = Vec::new();
     let mut max_ms = 50.0f64;
 
@@ -146,9 +158,8 @@ fn collect_lines(
                 if ms > max_ms {
                     max_ms = ms;
                 }
-                match s.target {
-                    Target::Cloudflare => cf.push((x, ms)),
-                    Target::Google => gg.push((x, ms)),
+                if let Some(bucket) = per_target.get_mut(s.target_idx) {
+                    bucket.push((x, ms));
                 }
             }
             None => to.push((x, 0.0)),
@@ -157,14 +168,13 @@ fn collect_lines(
     for p in to.iter_mut() {
         p.1 = max_ms;
     }
-    (cf, gg, to, max_ms)
+    (per_target, to, max_ms)
 }
 
 /// Bucketize samples into `bucket_count` time bins across the window.
-/// For each bucket, the bar height is the maximum RTT seen across both
-/// probe targets (worst-case wins so you actually notice spikes). Buckets
-/// with any timeouts emit a separate scatter point at the chart's max so
-/// they stand out against the bars.
+/// For each bucket, the bar height is the maximum RTT seen across *all*
+/// targets (worst-case wins so you actually notice spikes). Buckets with any
+/// timeouts emit a separate scatter point at chart-max.
 fn collect_bars(
     samples: &VecDeque<Sample>,
     cutoff: Instant,
@@ -183,7 +193,6 @@ fn collect_bars(
             continue;
         }
         let age = now.saturating_duration_since(s.t).as_secs_f64();
-        // Bucket 0 is the oldest, bucket_count-1 is the most recent.
         let bucket = (((window_secs - age) / bucket_secs) as usize).min(bucket_count - 1);
         match s.rtt {
             Some(d) => {
@@ -205,7 +214,6 @@ fn collect_bars(
     let mut bars = Vec::with_capacity(bucket_count);
     let mut timeouts = Vec::new();
     for i in 0..bucket_count {
-        // x = center of bucket, expressed as negative seconds from now.
         let x = -(window_secs - (i as f64 + 0.5) * bucket_secs);
         let v = max_per_bucket[i];
         if !v.is_nan() {
