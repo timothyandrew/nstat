@@ -1,0 +1,19 @@
+[package]
+name = "nstat"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+crossterm = "0.29.0"
+plist = "1.9.0"
+rand = "0.10.1"
+ratatui = "0.30.0"
+reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "http2"] }
+serde = { version = "1.0.228", features = ["derive"] }
+socket2 = "0.6.3"
+surge-ping = "0.8.4"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "process", "io-util"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
