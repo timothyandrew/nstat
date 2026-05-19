@@ -2,11 +2,11 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::Marker;
-use ratatui::text::Span;
-use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph};
 
 use crate::state::{AppState, Sample, TimeWindow};
 use crate::ui::header::health_color;
@@ -96,7 +96,125 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
                 area,
             );
         }
+        TimeWindow::Recent => {
+            draw_recent(frame, area, state, now, block, h_color);
+        }
     }
+}
+
+const MIN_PANE_WIDTH: u16 = 28;
+
+fn draw_recent(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    now: Instant,
+    outer_block: Block<'_>,
+    h_color: Color,
+) {
+    let n = state.targets.len() as u16;
+    let split = n > 1 && area.width >= n * MIN_PANE_WIDTH;
+
+    if !split {
+        let inner = outer_block.inner(area);
+        frame.render_widget(outer_block, area);
+        let lines = combined_lines(state, now, inner.height as usize);
+        frame.render_widget(Paragraph::new(lines), inner);
+        return;
+    }
+
+    // Per-target panes: drop the outer block so each pane carries its own
+    // bordered, target-titled frame.
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Ratio(1, n as u32); n as usize])
+        .split(area);
+
+    for (i, target) in state.targets.iter().enumerate() {
+        let color = target_color(i);
+        let pane = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(h_color))
+            .title(Span::styled(
+                format!(" {} ", target.label),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        let inner = pane.inner(cols[i]);
+        frame.render_widget(pane, cols[i]);
+        let lines = target_lines(state, now, i, inner.height as usize);
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+/// Newest at the bottom: take the most recent `max_rows` samples, then reverse
+/// so iteration runs oldest-to-newest before rendering.
+fn combined_lines(state: &AppState, now: Instant, max_rows: usize) -> Vec<Line<'static>> {
+    let label_pad = state.targets.iter().map(|t| t.label.len()).max().unwrap_or(0);
+    let mut recent: Vec<&Sample> = state.samples.iter().rev().take(max_rows).collect();
+    recent.reverse();
+    recent
+        .into_iter()
+        .map(|s| {
+            let label = state
+                .targets
+                .get(s.target_idx)
+                .map(|t| t.label.clone())
+                .unwrap_or_else(|| format!("#{}", s.target_idx));
+            let color = target_color(s.target_idx);
+            sample_line(
+                Some((label, color, label_pad)),
+                s.rtt,
+                now.saturating_duration_since(s.t).as_secs(),
+            )
+        })
+        .collect()
+}
+
+fn target_lines(
+    state: &AppState,
+    now: Instant,
+    target_idx: usize,
+    max_rows: usize,
+) -> Vec<Line<'static>> {
+    let mut recent: Vec<&Sample> = state
+        .samples
+        .iter()
+        .rev()
+        .filter(|s| s.target_idx == target_idx)
+        .take(max_rows)
+        .collect();
+    recent.reverse();
+    recent
+        .into_iter()
+        .map(|s| sample_line(None, s.rtt, now.saturating_duration_since(s.t).as_secs()))
+        .collect()
+}
+
+fn sample_line(
+    label: Option<(String, Color, usize)>,
+    rtt: Option<std::time::Duration>,
+    age_secs: u64,
+) -> Line<'static> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let timeout_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let body = match rtt {
+        Some(d) => Span::styled(
+            format!("time={:>6.1} ms", d.as_secs_f64() * 1000.0),
+            Style::default().fg(Color::White),
+        ),
+        None => Span::styled("timeout", timeout_style),
+    };
+    let mut spans = Vec::with_capacity(4);
+    if let Some((text, color, pad)) = label {
+        spans.push(Span::styled(
+            format!("{:>width$}", text, width = pad),
+            Style::default().fg(color),
+        ));
+        spans.push(Span::styled(": ", dim));
+    }
+    spans.push(body);
+    spans.push(Span::styled(format!("   ({}s ago)", age_secs), dim));
+    Line::from(spans)
 }
 
 fn build_chart<'a>(
@@ -136,6 +254,7 @@ fn bucket_count(w: TimeWindow) -> usize {
         TimeWindow::OneMinute => 60,
         TimeWindow::TenMinutes => 120,
         TimeWindow::OneHour => 180,
+        TimeWindow::Recent => unreachable!("Recent renders as a list, not buckets"),
     }
 }
 
@@ -236,6 +355,7 @@ fn window_labels(w: TimeWindow) -> Vec<Span<'static>> {
         TimeWindow::OneMinute => ("-60s", "-30s"),
         TimeWindow::TenMinutes => ("-10m", "-5m"),
         TimeWindow::OneHour => ("-1h", "-30m"),
+        TimeWindow::Recent => unreachable!("Recent renders as a list, not a chart axis"),
     };
     vec![Span::raw(left), Span::raw(mid), Span::raw("now")]
 }

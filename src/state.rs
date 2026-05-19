@@ -68,12 +68,16 @@ pub enum TimeWindow {
     OneMinute,
     TenMinutes,
     OneHour,
+    Recent,
 }
 
 impl TimeWindow {
+    /// Time range covered by this view. For `Recent` (a scrolling list of the
+    /// newest samples, not a time-bounded view) the duration is only used to
+    /// scope the footer stats, so 1m matches what the user is looking at.
     pub fn duration(self) -> Duration {
         match self {
-            TimeWindow::OneMinute => Duration::from_secs(60),
+            TimeWindow::OneMinute | TimeWindow::Recent => Duration::from_secs(60),
             TimeWindow::TenMinutes => Duration::from_secs(600),
             TimeWindow::OneHour => Duration::from_secs(3600),
         }
@@ -84,6 +88,7 @@ impl TimeWindow {
             TimeWindow::OneMinute => "1m",
             TimeWindow::TenMinutes => "10m",
             TimeWindow::OneHour => "1h",
+            TimeWindow::Recent => "list",
         }
     }
 
@@ -91,7 +96,8 @@ impl TimeWindow {
         match self {
             TimeWindow::OneMinute => TimeWindow::TenMinutes,
             TimeWindow::TenMinutes => TimeWindow::OneHour,
-            TimeWindow::OneHour => TimeWindow::OneMinute,
+            TimeWindow::OneHour => TimeWindow::Recent,
+            TimeWindow::Recent => TimeWindow::OneMinute,
         }
     }
 }
