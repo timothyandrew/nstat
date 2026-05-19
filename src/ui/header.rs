@@ -42,18 +42,33 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let wifi = &state.wifi;
     let iface = wifi.interface.as_deref().unwrap_or("—");
-    let ssid = wifi.ssid.as_deref().unwrap_or("—");
     let rssi = wifi
         .rssi_dbm
         .map(|v| format!("{} dBm", v))
         .unwrap_or_else(|| "—".into());
     let channel = wifi.channel.as_deref().unwrap_or("—");
 
+    // macOS 15+ returns "<redacted>" for SSID/BSSID unless the calling terminal
+    // has Location Services access. Surface the cause instead of the noise.
+    let ssid_is_redacted = wifi
+        .ssid
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("<redacted>"));
+    let ssid_span = if ssid_is_redacted {
+        Span::styled(
+            "(grant Location to terminal)",
+            Style::default().fg(Color::Yellow),
+        )
+    } else {
+        let ssid = wifi.ssid.as_deref().unwrap_or("—");
+        Span::raw(format!("\"{}\"", ssid))
+    };
+
     let left = Line::from(vec![
         Span::styled(iface, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         Span::styled("SSID ", Style::default().fg(Color::DarkGray)),
-        Span::raw(format!("\"{}\"", ssid)),
+        ssid_span,
         Span::raw("  "),
         Span::styled("RSSI ", Style::default().fg(Color::DarkGray)),
         Span::raw(rssi),
