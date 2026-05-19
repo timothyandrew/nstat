@@ -55,7 +55,13 @@ nstat --help                 # usage
 
 ## macOS privacy notes
 
-- **SSID/BSSID may show as `<redacted>`** unless your terminal has Location Services access. This is a macOS 15+ restriction on unprivileged processes. To unredact: System Settings → Privacy & Security → Location Services → enable for your terminal app.
+- **SSID/BSSID may show as `(grant Location to terminal)`** because macOS 15+ redacts them for any process whose parent app doesn't have Location Services access. nstat itself can't prompt — the permission attaches to the terminal app you launched it from. To unredact:
+  1. **System Settings → Privacy & Security → Location Services** → toggle on for your terminal (Terminal.app, iTerm, Ghostty, Alacritty, etc.).
+  2. If your terminal isn't in the list, run nstat once first so macOS registers the request, then re-check.
+  3. Quit and relaunch the terminal — the permission only applies to newly-started processes.
+  4. Run nstat again. WiFi metadata refreshes every 30s, so it may take that long for the redacted hint to clear.
+  
+  If you're inside `tmux`/`screen` or SSH'd in, the permission attaches to whichever process is the parent — start a fresh session after granting.
 - `system_profiler SPAirPortDataType` takes ~7 seconds to return on recent macOS, so WiFi metadata refreshes every 30s and may show stale signal strength briefly after launch.
 
 ## Health thresholds (trailing 30s)

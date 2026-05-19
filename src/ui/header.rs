@@ -57,7 +57,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     let ssid_span = if ssid_is_redacted {
         Span::styled(
             "(grant Location to terminal)",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
         )
     } else {
         let ssid = wifi.ssid.as_deref().unwrap_or("—");

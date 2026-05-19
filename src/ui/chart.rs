@@ -11,13 +11,15 @@ use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType};
 use crate::state::{AppState, Sample, TimeWindow};
 use crate::ui::header::health_color;
 
+// Avoid green/yellow/red (and their Light* variants): those are reserved
+// for health status so a chart line never reads as a status signal.
 const TARGET_PALETTE: &[Color] = &[
     Color::Cyan,
-    Color::LightYellow,
-    Color::LightGreen,
     Color::LightMagenta,
     Color::LightBlue,
+    Color::LightCyan,
     Color::White,
+    Color::Magenta,
 ];
 
 pub fn target_color(idx: usize) -> Color {
