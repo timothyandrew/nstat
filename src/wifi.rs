@@ -65,7 +65,42 @@ async fn query_wifi() -> anyhow::Result<WifiInfo> {
     if !output.status.success() {
         anyhow::bail!("system_profiler failed: {}", output.status);
     }
-    parse_plist(&output.stdout)
+    let mut info = parse_plist(&output.stdout)?;
+    if let Some(dev) = info.interface.as_deref() {
+        info.interface_label = lookup_hardware_port(dev).await;
+    }
+    Ok(info)
+}
+
+// Maps a BSD device (e.g. "en0") to its System Preferences hardware-port label
+// (e.g. "Wi-Fi"). Returns None if `networksetup` fails or the device isn't
+// listed — the caller falls back to the BSD name alone.
+async fn lookup_hardware_port(device: &str) -> Option<String> {
+    let output = Command::new("networksetup")
+        .arg("-listallhardwareports")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    parse_hardware_port(text, device)
+}
+
+fn parse_hardware_port(text: &str, device: &str) -> Option<String> {
+    let mut current_port: Option<&str> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Hardware Port:") {
+            current_port = Some(rest.trim());
+        } else if let Some(rest) = line.strip_prefix("Device:") {
+            if rest.trim() == device {
+                return current_port.map(str::to_string);
+            }
+        }
+    }
+    None
 }
 
 fn parse_plist(bytes: &[u8]) -> anyhow::Result<WifiInfo> {
@@ -189,5 +224,13 @@ mod tests {
         let (r, n) = parse_signal_noise("-52 dBm / -89 dBm");
         assert_eq!(r, Some(-52));
         assert_eq!(n, Some(-89));
+    }
+
+    #[test]
+    fn parses_hardware_port() {
+        let text = "Hardware Port: Ethernet\nDevice: en1\nEthernet Address: aa:bb:cc:dd:ee:ff\n\nHardware Port: Wi-Fi\nDevice: en0\nEthernet Address: 11:22:33:44:55:66\n";
+        assert_eq!(parse_hardware_port(text, "en0").as_deref(), Some("Wi-Fi"));
+        assert_eq!(parse_hardware_port(text, "en1").as_deref(), Some("Ethernet"));
+        assert_eq!(parse_hardware_port(text, "en99"), None);
     }
 }

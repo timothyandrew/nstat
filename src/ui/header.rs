@@ -17,11 +17,19 @@ pub fn health_color(h: Health) -> Color {
     }
 }
 
+fn badge_fg(h: Health) -> Color {
+    // Yellow against white is unreadable; pick a dark fg for light bgs.
+    match h {
+        Health::Degraded => Color::Black,
+        _ => Color::White,
+    }
+}
+
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     let h_color = health_color(state.health);
 
     let title = Line::from(vec![
-        Span::styled(" nstat ", Style::default().fg(Color::White).bg(h_color).add_modifier(Modifier::BOLD)),
+        Span::styled(" nstat ", Style::default().fg(badge_fg(state.health)).bg(h_color).add_modifier(Modifier::BOLD)),
     ]);
 
     let block = Block::default()
@@ -48,27 +56,13 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         .unwrap_or_else(|| "—".into());
     let channel = wifi.channel.as_deref().unwrap_or("—");
 
-    // macOS 15+ returns "<redacted>" for SSID/BSSID unless the calling terminal
-    // has Location Services access. Surface the cause instead of the noise.
-    let ssid_is_redacted = wifi
-        .ssid
-        .as_deref()
-        .is_some_and(|s| s.eq_ignore_ascii_case("<redacted>"));
-    let ssid_span = if ssid_is_redacted {
-        Span::styled(
-            "(grant Location to terminal)",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-        )
-    } else {
-        let ssid = wifi.ssid.as_deref().unwrap_or("—");
-        Span::raw(format!("\"{}\"", ssid))
+    let iface_display = match wifi.interface_label.as_deref() {
+        Some(label) => format!("{} ({})", label, iface),
+        None => iface.to_string(),
     };
 
     let left = Line::from(vec![
-        Span::styled(iface, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
-        Span::styled("SSID ", Style::default().fg(Color::DarkGray)),
-        ssid_span,
+        Span::styled(iface_display, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         Span::styled("RSSI ", Style::default().fg(Color::DarkGray)),
         Span::raw(rssi),

@@ -99,6 +99,7 @@ impl TimeWindow {
 #[derive(Clone, Debug, Default)]
 pub struct WifiInfo {
     pub interface: Option<String>,
+    pub interface_label: Option<String>,
     pub ssid: Option<String>,
     pub bssid: Option<String>,
     pub rssi_dbm: Option<i32>,
