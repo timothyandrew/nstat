@@ -38,7 +38,8 @@ Each target gets its own color in the 1m line chart. The 10m/1h bar charts show 
 
 | Key | Action |
 |-----|--------|
-| `w` | cycle time window (1m → 10m → 1h) |
+| `w` | cycle view (1m → 10m → 1h → recent list) |
+| `r` | reset history (clear samples, restart uptime) |
 | `q` / `Esc` / `Ctrl-C` | quit |
 
 ### Other modes

@@ -70,6 +70,8 @@ fn hints_line(state: &AppState) -> Line<'static> {
     Line::from(vec![
         Span::styled("[w]", key),
         Span::styled(" cycle window  ", dim),
+        Span::styled("[r]", key),
+        Span::styled(" reset  ", dim),
         Span::styled("[q]", key),
         Span::styled(" quit  ", dim),
         Span::styled("window: ", dim),

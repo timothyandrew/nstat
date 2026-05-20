@@ -43,58 +43,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 
     match state.window {
         TimeWindow::OneMinute => {
-            let (per_target, timeouts, max_ms) =
-                collect_lines(&state.samples, state.targets.len(), cutoff, now);
-            let y_max = chart_y_max(max_ms);
-            let mut datasets: Vec<Dataset> = state
-                .targets
-                .iter()
-                .enumerate()
-                .map(|(i, t)| {
-                    Dataset::default()
-                        .name(t.label.clone())
-                        .marker(Marker::Braille)
-                        .graph_type(GraphType::Line)
-                        .style(Style::default().fg(target_color(i)))
-                        .data(&per_target[i])
-                })
-                .collect();
-            datasets.push(
-                Dataset::default()
-                    .name("timeout")
-                    .marker(Marker::Dot)
-                    .graph_type(GraphType::Scatter)
-                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
-                    .data(&timeouts),
-            );
-            frame.render_widget(
-                build_chart(datasets, block, window_secs, y_max, state.window),
-                area,
-            );
+            draw_lines(frame, area, state, now, cutoff, window_secs, block, h_color);
         }
         TimeWindow::TenMinutes | TimeWindow::OneHour => {
-            let bucket_count = bucket_count(state.window);
-            let (bars, timeouts, max_ms) =
-                collect_bars(&state.samples, cutoff, now, window_secs, bucket_count);
-            let y_max = chart_y_max(max_ms);
-            let datasets = vec![
-                Dataset::default()
-                    .name("max rtt")
-                    .marker(Marker::Bar)
-                    .graph_type(GraphType::Bar)
-                    .style(Style::default().fg(Color::Cyan))
-                    .data(&bars),
-                Dataset::default()
-                    .name("timeout")
-                    .marker(Marker::Block)
-                    .graph_type(GraphType::Scatter)
-                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
-                    .data(&timeouts),
-            ];
-            frame.render_widget(
-                build_chart(datasets, block, window_secs, y_max, state.window),
-                area,
-            );
+            draw_bars(frame, area, state, now, cutoff, window_secs, block, h_color);
         }
         TimeWindow::Recent => {
             draw_recent(frame, area, state, now, block, h_color);
@@ -103,6 +55,239 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 const MIN_PANE_WIDTH: u16 = 28;
+/// Per-target chart pane needs room for top + bottom borders, the plot itself
+/// (~4 rows minimum to be readable), and the x-axis label row.
+const MIN_CHART_HEIGHT: u16 = 7;
+
+fn split_vertically(area: Rect, n: u16) -> bool {
+    n > 1 && area.height >= n * MIN_CHART_HEIGHT
+}
+
+fn pane_block(label: &str, color: Color, h_color: Color) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(h_color))
+        .title(Span::styled(
+            format!(" {} ", label),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn vertical_panes(area: Rect, n: usize) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Ratio(1, n as u32); n])
+        .split(area)
+}
+
+fn draw_lines(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    now: Instant,
+    cutoff: Instant,
+    window_secs: f64,
+    block: Block<'_>,
+    h_color: Color,
+) {
+    let (per_target, timeouts, max_ms) =
+        collect_lines(&state.samples, state.targets.len(), cutoff, now);
+    let y_max = chart_y_max(max_ms);
+    let n = state.targets.len() as u16;
+
+    if !split_vertically(area, n) {
+        let mut datasets: Vec<Dataset> = state
+            .targets
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                Dataset::default()
+                    .name(t.label.clone())
+                    .marker(Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(target_color(i)))
+                    .data(&per_target[i])
+            })
+            .collect();
+        datasets.push(
+            Dataset::default()
+                .name("timeout")
+                .marker(Marker::Dot)
+                .graph_type(GraphType::Scatter)
+                .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                .data(&timeouts),
+        );
+        frame.render_widget(
+            build_chart(datasets, block, window_secs, y_max, state.window),
+            area,
+        );
+        return;
+    }
+
+    let rows = vertical_panes(area, n as usize);
+    for (i, target) in state.targets.iter().enumerate() {
+        let color = target_color(i);
+        let target_timeouts = target_timeout_points(&state.samples, i, cutoff, now, y_max);
+        let datasets = vec![
+            Dataset::default()
+                .name(target.label.clone())
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(color))
+                .data(&per_target[i]),
+            Dataset::default()
+                .name("timeout")
+                .marker(Marker::Dot)
+                .graph_type(GraphType::Scatter)
+                .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                .data(&target_timeouts),
+        ];
+        frame.render_widget(
+            build_chart(
+                datasets,
+                pane_block(&target.label, color, h_color),
+                window_secs,
+                y_max,
+                state.window,
+            ),
+            rows[i],
+        );
+    }
+}
+
+fn draw_bars(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    now: Instant,
+    cutoff: Instant,
+    window_secs: f64,
+    block: Block<'_>,
+    h_color: Color,
+) {
+    let bc = bucket_count(state.window);
+    // Compute a global y_max across all targets so split panes share scale.
+    let (_, _, max_ms) = collect_bars(&state.samples, cutoff, now, window_secs, bc);
+    let y_max = chart_y_max(max_ms);
+    let n = state.targets.len() as u16;
+
+    if !split_vertically(area, n) {
+        let (bars, timeouts, _) = collect_bars(&state.samples, cutoff, now, window_secs, bc);
+        // Re-fix timeout y to the global y_max (collect_bars also does this, but
+        // only against the local max we just discarded).
+        let timeouts: Vec<(f64, f64)> = timeouts.into_iter().map(|(x, _)| (x, y_max)).collect();
+        let datasets = vec![
+            Dataset::default()
+                .name("max rtt")
+                .marker(Marker::Bar)
+                .graph_type(GraphType::Bar)
+                .style(Style::default().fg(Color::Cyan))
+                .data(&bars),
+            Dataset::default()
+                .name("timeout")
+                .marker(Marker::Block)
+                .graph_type(GraphType::Scatter)
+                .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                .data(&timeouts),
+        ];
+        frame.render_widget(
+            build_chart(datasets, block, window_secs, y_max, state.window),
+            area,
+        );
+        return;
+    }
+
+    let rows = vertical_panes(area, n as usize);
+    for (i, target) in state.targets.iter().enumerate() {
+        let color = target_color(i);
+        let (bars, timeouts) =
+            collect_target_bars(&state.samples, i, cutoff, now, window_secs, bc, y_max);
+        let datasets = vec![
+            Dataset::default()
+                .name("max rtt")
+                .marker(Marker::Bar)
+                .graph_type(GraphType::Bar)
+                .style(Style::default().fg(color))
+                .data(&bars),
+            Dataset::default()
+                .name("timeout")
+                .marker(Marker::Block)
+                .graph_type(GraphType::Scatter)
+                .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                .data(&timeouts),
+        ];
+        frame.render_widget(
+            build_chart(
+                datasets,
+                pane_block(&target.label, color, h_color),
+                window_secs,
+                y_max,
+                state.window,
+            ),
+            rows[i],
+        );
+    }
+}
+
+fn target_timeout_points(
+    samples: &VecDeque<Sample>,
+    target_idx: usize,
+    cutoff: Instant,
+    now: Instant,
+    y: f64,
+) -> Vec<(f64, f64)> {
+    samples
+        .iter()
+        .filter(|s| s.target_idx == target_idx && s.t >= cutoff && s.rtt.is_none())
+        .map(|s| (-(now.saturating_duration_since(s.t).as_secs_f64()), y))
+        .collect()
+}
+
+fn collect_target_bars(
+    samples: &VecDeque<Sample>,
+    target_idx: usize,
+    cutoff: Instant,
+    now: Instant,
+    window_secs: f64,
+    bucket_count: usize,
+    timeout_y: f64,
+) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    let mut max_per_bucket = vec![f64::NAN; bucket_count];
+    let mut timeouts_per_bucket = vec![false; bucket_count];
+    let bucket_secs = window_secs / bucket_count as f64;
+
+    for s in samples.iter() {
+        if s.target_idx != target_idx || s.t < cutoff {
+            continue;
+        }
+        let age = now.saturating_duration_since(s.t).as_secs_f64();
+        let bucket = (((window_secs - age) / bucket_secs) as usize).min(bucket_count - 1);
+        match s.rtt {
+            Some(d) => {
+                let ms = d.as_secs_f64() * 1000.0;
+                let cur = max_per_bucket[bucket];
+                if cur.is_nan() || ms > cur {
+                    max_per_bucket[bucket] = ms;
+                }
+            }
+            None => timeouts_per_bucket[bucket] = true,
+        }
+    }
+
+    let mut bars = Vec::with_capacity(bucket_count);
+    let mut timeouts = Vec::new();
+    for i in 0..bucket_count {
+        let x = -(window_secs - (i as f64 + 0.5) * bucket_secs);
+        let v = max_per_bucket[i];
+        if !v.is_nan() {
+            bars.push((x, v));
+        }
+        if timeouts_per_bucket[i] {
+            timeouts.push((x, timeout_y));
+        }
+    }
+    (bars, timeouts)
+}
 
 fn draw_recent(
     frame: &mut Frame,

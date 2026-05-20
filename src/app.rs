@@ -78,6 +78,10 @@ pub async fn run(
                             let mut s = state.write().await;
                             s.cycle_window();
                         }
+                        if matches!(k.code, KeyCode::Char('r')) {
+                            let mut s = state.write().await;
+                            s.reset_data();
+                        }
                     }
                     Some(AppEvent::Quit) | None => return Ok(()),
                 }

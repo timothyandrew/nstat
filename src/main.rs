@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use tokio::net::lookup_host;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 use tracing_subscriber::EnvFilter;
 
 use crate::state::{AppState, Target, default_targets};
@@ -114,11 +114,12 @@ async fn main() -> anyhow::Result<()> {
     install_panic_hook();
 
     let state = Arc::new(RwLock::new(AppState::new(targets)));
+    let network_change = Arc::new(Notify::new());
 
     probe::icmp::spawn_all(state.clone()).await?;
     probe::http::spawn(state.clone()).await?;
-    probe::pubnet::spawn(state.clone()).await?;
-    wifi::spawn(state.clone()).await?;
+    probe::pubnet::spawn(state.clone(), network_change.clone()).await?;
+    wifi::spawn(state.clone(), network_change.clone()).await?;
 
     let terminal = ratatui::init();
     let input = app::spawn_input();
@@ -139,7 +140,8 @@ fn print_help() {
     println!("         when no targets are given. Hostnames are resolved once at startup.");
     println!();
     println!("KEYS:");
-    println!("    w    cycle time window (1m / 10m / 1h)");
+    println!("    w    cycle view (1m / 10m / 1h / recent list)");
+    println!("    r    reset history (clear samples, restart uptime)");
     println!("    q    quit");
     println!();
     println!("LOGS: ~/Library/Logs/nstat/nstat.log");
@@ -151,8 +153,9 @@ async fn run_check(targets: Vec<Target>) -> anyhow::Result<()> {
         println!("  target: {} ({})", t.label, t.addr);
     }
     let state = Arc::new(RwLock::new(AppState::new(targets)));
+    let network_change = Arc::new(Notify::new());
     probe::icmp::spawn_all(state.clone()).await?;
-    wifi::spawn(state.clone()).await?;
+    wifi::spawn(state.clone(), network_change).await?;
     tokio::time::sleep(std::time::Duration::from_secs(8)).await;
     let s = state.read().await;
     let total = s.samples.len();

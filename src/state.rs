@@ -173,6 +173,20 @@ impl AppState {
         self.window = self.window.next();
     }
 
+    /// Wipe ping history and derived counters, restart the uptime clock.
+    /// Leaves network identity (wifi, pubnet) intact since those are still
+    /// describing the same connection.
+    pub fn reset_data(&mut self) {
+        self.started_at = Instant::now();
+        self.samples.clear();
+        self.network_markers.clear();
+        self.icmp_consecutive_timeouts = 0;
+        self.http_fallback_active = false;
+        self.http_last_status = None;
+        self.http_last_check = None;
+        self.health = Health::Unknown;
+    }
+
     pub fn uptime(&self) -> Duration {
         self.started_at.elapsed()
     }

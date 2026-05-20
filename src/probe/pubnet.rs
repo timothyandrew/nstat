@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use reqwest::Client;
 use serde::Deserialize;
-use tokio::sync::RwLock;
-use tokio::time::interval;
+use tokio::sync::{Notify, RwLock};
+use tokio::time::{interval, sleep};
 use tracing::{debug, warn};
 
 use crate::state::AppState;
@@ -19,24 +19,35 @@ struct IpInfo {
     org: Option<String>,
 }
 
-pub async fn spawn(state: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
+pub async fn spawn(
+    state: Arc<RwLock<AppState>>,
+    network_change: Arc<Notify>,
+) -> anyhow::Result<()> {
     let client = Client::builder()
         .timeout(TIMEOUT)
         .user_agent("nstat/0.1")
         .build()?;
 
     tokio::spawn(async move {
-        run(client, state).await;
+        run(client, state, network_change).await;
     });
     Ok(())
 }
 
-async fn run(client: Client, state: Arc<RwLock<AppState>>) {
+async fn run(client: Client, state: Arc<RwLock<AppState>>, network_change: Arc<Notify>) {
     let mut ticker = interval(POLL_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        ticker.tick().await;
+        let triggered_by_net_change = tokio::select! {
+            _ = ticker.tick() => false,
+            _ = network_change.notified() => true,
+        };
+        // Give DHCP / route a moment to settle when a network just flipped —
+        // otherwise the request may resolve against the old default route.
+        if triggered_by_net_change {
+            sleep(Duration::from_secs(2)).await;
+        }
         match fetch(&client).await {
             Ok(info) => {
                 debug!(?info, "pubnet refreshed");

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use plist::Value;
 use tokio::process::Command;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
@@ -13,9 +13,12 @@ use crate::state::{AppState, WifiInfo};
 // that would just queue up redundant calls. Signal/channel rarely change.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
-pub async fn spawn(state: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
+pub async fn spawn(
+    state: Arc<RwLock<AppState>>,
+    network_change: Arc<Notify>,
+) -> anyhow::Result<()> {
     tokio::spawn(async move {
-        run(state).await;
+        run(state, network_change).await;
     });
     Ok(())
 }
@@ -24,7 +27,7 @@ pub async fn probe_once() -> anyhow::Result<WifiInfo> {
     query_wifi().await
 }
 
-async fn run(state: Arc<RwLock<AppState>>) {
+async fn run(state: Arc<RwLock<AppState>>, network_change: Arc<Notify>) {
     info!("wifi worker started");
     let mut ticker = interval(POLL_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -34,20 +37,31 @@ async fn run(state: Arc<RwLock<AppState>>) {
         match query_wifi().await {
             Ok(info) => {
                 debug!(?info, "wifi worker got info");
-                let (prev_ssid, had_any) = {
+                let (prev_ssid, prev_iface, had_any) = {
                     let s = state.read().await;
-                    (s.wifi.ssid.clone(), s.wifi.interface.is_some())
+                    (
+                        s.wifi.ssid.clone(),
+                        s.wifi.interface.clone(),
+                        s.wifi.interface.is_some(),
+                    )
                 };
-                // Roam proxy: SSID value change. macOS redacts SSID without Location
-                // entitlement, so same-SSID roams (different BSSID) won't trigger this.
-                let ssid_changed = match (&prev_ssid, &info.ssid) {
-                    (Some(a), Some(b)) => a != b,
-                    _ => false,
-                };
+                // Any SSID transition counts as a network change (Some↔None or
+                // Some(a)→Some(b)). Interface flips (en0→en1) are also a change.
+                // macOS redacts SSID without Location entitlement, so same-SSID
+                // roams (different BSSID) won't be caught here.
+                let ssid_changed = prev_ssid != info.ssid;
+                let iface_changed = prev_iface != info.interface;
+                let net_changed = had_any && (ssid_changed || iface_changed);
+
                 let mut s = state.write().await;
                 s.wifi = info;
-                if ssid_changed && had_any {
+                if net_changed {
                     s.push_marker(Instant::now());
+                }
+                drop(s);
+                if net_changed {
+                    debug!("network change detected, notifying");
+                    network_change.notify_waiters();
                 }
             }
             Err(e) => {
