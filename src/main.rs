@@ -117,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
 
     probe::icmp::spawn_all(state.clone()).await?;
     probe::http::spawn(state.clone()).await?;
+    probe::pubnet::spawn(state.clone()).await?;
     wifi::spawn(state.clone()).await?;
 
     let terminal = ratatui::init();

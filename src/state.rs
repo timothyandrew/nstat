@@ -103,6 +103,13 @@ impl TimeWindow {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct PublicNet {
+    pub ip: Option<String>,
+    pub isp: Option<String>,
+    pub last_check: Option<Instant>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct WifiInfo {
     pub interface: Option<String>,
     pub interface_label: Option<String>,
@@ -125,6 +132,7 @@ pub struct AppState {
     pub http_last_status: Option<HttpStatus>,
     pub http_last_check: Option<Instant>,
     pub wifi: WifiInfo,
+    pub pubnet: PublicNet,
     pub health: Health,
     pub window: TimeWindow,
 }
@@ -141,6 +149,7 @@ impl AppState {
             http_last_status: None,
             http_last_check: None,
             wifi: WifiInfo::default(),
+            pubnet: PublicNet::default(),
             health: Health::Unknown,
             window: TimeWindow::OneMinute,
         }

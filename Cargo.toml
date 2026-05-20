@@ -9,7 +9,7 @@ crossterm = "0.29.0"
 plist = "1.9.0"
 rand = "0.10.1"
 ratatui = "0.30.0"
-reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "http2"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "http2", "json"] }
 serde = { version = "1.0.228", features = ["derive"] }
 socket2 = "0.6.3"
 surge-ping = "0.8.4"
