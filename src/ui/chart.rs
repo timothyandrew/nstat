@@ -8,7 +8,8 @@ use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph};
 
-use crate::state::{AppState, Sample, TimeWindow};
+use crate::state::{AppState, Health, Sample, TimeWindow};
+use crate::stats::{Stats, target_window_stats};
 use crate::ui::header::health_color;
 
 // Avoid green/yellow/red (and their Light* variants): those are reserved
@@ -43,13 +44,13 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 
     match state.window {
         TimeWindow::OneMinute => {
-            draw_lines(frame, area, state, now, cutoff, window_secs, block, h_color);
+            draw_lines(frame, area, state, now, cutoff, window_secs, block);
         }
         TimeWindow::TenMinutes | TimeWindow::OneHour => {
-            draw_bars(frame, area, state, now, cutoff, window_secs, block, h_color);
+            draw_bars(frame, area, state, now, cutoff, window_secs, block);
         }
         TimeWindow::Recent => {
-            draw_recent(frame, area, state, now, block, h_color);
+            draw_recent(frame, area, state, now, block);
         }
     }
 }
@@ -63,14 +64,35 @@ fn split_vertically(area: Rect, n: u16) -> bool {
     n > 1 && area.height >= n * MIN_CHART_HEIGHT
 }
 
-fn pane_block(label: &str, color: Color, h_color: Color) -> Block<'static> {
+fn pane_block(label: &str, color: Color, health: Health, stats: Option<Stats>) -> Block<'static> {
+    let h_color = health_color(health);
+    let dim = Style::default().fg(Color::DarkGray);
+    let val = Style::default().fg(Color::White);
+    let mut title_spans = vec![Span::styled(
+        format!(" {} ", label),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )];
+    if let Some(s) = stats {
+        title_spans.extend([
+            Span::styled(" p50 ", dim),
+            Span::styled(fmt_ms(s.p50_ms), val),
+            Span::styled("  p95 ", dim),
+            Span::styled(fmt_ms(s.p95_ms), val),
+            Span::styled("  loss ", dim),
+            Span::styled(format!("{:.1}% ", s.loss_pct), val),
+        ]);
+    }
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(h_color))
-        .title(Span::styled(
-            format!(" {} ", label),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ))
+        .title(Line::from(title_spans))
+}
+
+fn fmt_ms(v: Option<f64>) -> String {
+    match v {
+        Some(ms) => format!("{:.1}ms", ms),
+        None => "—".into(),
+    }
 }
 
 fn vertical_panes(area: Rect, n: usize) -> std::rc::Rc<[Rect]> {
@@ -88,7 +110,6 @@ fn draw_lines(
     cutoff: Instant,
     window_secs: f64,
     block: Block<'_>,
-    h_color: Color,
 ) {
     let (per_target, timeouts, max_ms) =
         collect_lines(&state.samples, state.targets.len(), cutoff, now);
@@ -125,6 +146,7 @@ fn draw_lines(
     }
 
     let rows = vertical_panes(area, n as usize);
+    let window = state.window.duration();
     for (i, target) in state.targets.iter().enumerate() {
         let color = target_color(i);
         let target_timeouts = target_timeout_points(&state.samples, i, cutoff, now, y_max);
@@ -142,10 +164,12 @@ fn draw_lines(
                 .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
                 .data(&target_timeouts),
         ];
+        let stats = target_window_stats(state, i, window);
+        let health = state.target_healths.get(i).copied().unwrap_or(Health::Unknown);
         frame.render_widget(
             build_chart(
                 datasets,
-                pane_block(&target.label, color, h_color),
+                pane_block(&target.label, color, health, Some(stats)),
                 window_secs,
                 y_max,
                 state.window,
@@ -163,7 +187,6 @@ fn draw_bars(
     cutoff: Instant,
     window_secs: f64,
     block: Block<'_>,
-    h_color: Color,
 ) {
     let bc = bucket_count(state.window);
     // Compute a global y_max across all targets so split panes share scale.
@@ -198,6 +221,7 @@ fn draw_bars(
     }
 
     let rows = vertical_panes(area, n as usize);
+    let window = state.window.duration();
     for (i, target) in state.targets.iter().enumerate() {
         let color = target_color(i);
         let (bars, timeouts) =
@@ -216,10 +240,12 @@ fn draw_bars(
                 .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
                 .data(&timeouts),
         ];
+        let stats = target_window_stats(state, i, window);
+        let health = state.target_healths.get(i).copied().unwrap_or(Health::Unknown);
         frame.render_widget(
             build_chart(
                 datasets,
-                pane_block(&target.label, color, h_color),
+                pane_block(&target.label, color, health, Some(stats)),
                 window_secs,
                 y_max,
                 state.window,
@@ -289,14 +315,7 @@ fn collect_target_bars(
     (bars, timeouts)
 }
 
-fn draw_recent(
-    frame: &mut Frame,
-    area: Rect,
-    state: &AppState,
-    now: Instant,
-    outer_block: Block<'_>,
-    h_color: Color,
-) {
+fn draw_recent(frame: &mut Frame, area: Rect, state: &AppState, now: Instant, outer_block: Block<'_>) {
     let n = state.targets.len() as u16;
     let split = n > 1 && area.width >= n * MIN_PANE_WIDTH;
 
@@ -317,13 +336,8 @@ fn draw_recent(
 
     for (i, target) in state.targets.iter().enumerate() {
         let color = target_color(i);
-        let pane = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(h_color))
-            .title(Span::styled(
-                format!(" {} ", target.label),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ));
+        let health = state.target_healths.get(i).copied().unwrap_or(Health::Unknown);
+        let pane = pane_block(&target.label, color, health, None);
         let inner = pane.inner(cols[i]);
         frame.render_widget(pane, cols[i]);
         let lines = target_lines(state, now, i, inner.height as usize);

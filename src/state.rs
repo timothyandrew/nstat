@@ -134,11 +134,13 @@ pub struct AppState {
     pub wifi: WifiInfo,
     pub pubnet: PublicNet,
     pub health: Health,
+    pub target_healths: Vec<Health>,
     pub window: TimeWindow,
 }
 
 impl AppState {
     pub fn new(targets: Vec<Target>) -> Self {
+        let n = targets.len();
         Self {
             started_at: Instant::now(),
             targets,
@@ -151,6 +153,7 @@ impl AppState {
             wifi: WifiInfo::default(),
             pubnet: PublicNet::default(),
             health: Health::Unknown,
+            target_healths: vec![Health::Unknown; n],
             window: TimeWindow::OneMinute,
         }
     }
@@ -185,6 +188,9 @@ impl AppState {
         self.http_last_status = None;
         self.http_last_check = None;
         self.health = Health::Unknown;
+        for h in self.target_healths.iter_mut() {
+            *h = Health::Unknown;
+        }
     }
 
     pub fn uptime(&self) -> Duration {

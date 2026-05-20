@@ -50,6 +50,18 @@ pub fn window_stats(samples: &[&Sample]) -> Stats {
     stats
 }
 
+/// Stats for one target inside the given trailing window.
+pub fn target_window_stats(state: &AppState, target_idx: usize, window: Duration) -> Stats {
+    let now = Instant::now();
+    let cutoff = now.checked_sub(window).unwrap_or(now);
+    let filtered: Vec<&Sample> = state
+        .samples
+        .iter()
+        .filter(|s| s.target_idx == target_idx && s.t >= cutoff)
+        .collect();
+    window_stats(&filtered)
+}
+
 fn percentile(values: &mut [f64], p: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
@@ -60,19 +72,28 @@ fn percentile(values: &mut [f64], p: f64) -> f64 {
     *nth
 }
 
-pub fn classify(state: &AppState) -> Health {
+/// Health classification for a single target's trailing 30s. ICMP-blocked /
+/// Offline are still global signals — they depend on the cross-target streak
+/// counter and the HTTP fallback probe, both of which describe the link as a
+/// whole rather than any one destination.
+pub fn classify_target(state: &AppState, target_idx: usize) -> Health {
     let now = Instant::now();
     let window_30s: Vec<&Sample> = state
         .samples
         .iter()
-        .filter(|s| now.duration_since(s.t) <= Duration::from_secs(30))
+        .filter(|s| {
+            s.target_idx == target_idx && now.duration_since(s.t) <= Duration::from_secs(30)
+        })
         .collect();
+    classify_samples(&window_30s, state)
+}
 
-    if window_30s.is_empty() {
+fn classify_samples(samples: &[&Sample], state: &AppState) -> Health {
+    if samples.is_empty() {
         return Health::Unknown;
     }
 
-    let s = window_stats(&window_30s);
+    let s = window_stats(samples);
 
     if state.icmp_consecutive_timeouts >= 5 {
         match state.http_last_status {
@@ -93,4 +114,21 @@ pub fn classify(state: &AppState) -> Health {
         return Health::Healthy;
     }
     Health::Degraded
+}
+
+/// Worst (most-alarming) of a set of healths. Drives the header badge so a
+/// single glance still surfaces trouble on any target.
+pub fn worst(healths: &[Health]) -> Health {
+    healths.iter().copied().max_by_key(severity).unwrap_or(Health::Unknown)
+}
+
+fn severity(h: &Health) -> u8 {
+    match h {
+        Health::Unknown => 0,
+        Health::Healthy => 1,
+        Health::Degraded => 2,
+        Health::IcmpBlocked => 3,
+        Health::Bad => 4,
+        Health::Offline => 5,
+    }
 }

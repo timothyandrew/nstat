@@ -8,7 +8,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::time::{Instant, interval};
 
 use crate::state::AppState;
-use crate::stats::classify;
+use crate::stats::{classify_target, worst};
 use crate::ui;
 
 const REDRAW_INTERVAL: Duration = Duration::from_millis(250);
@@ -54,12 +54,14 @@ pub async fn run(
         tokio::select! {
             _ = redraw.tick() => {
                 if last_classify.elapsed() >= Duration::from_millis(500) {
-                    let new_health = {
+                    let target_healths: Vec<_> = {
                         let s = state.read().await;
-                        classify(&s)
+                        (0..s.targets.len()).map(|i| classify_target(&s, i)).collect()
                     };
+                    let overall = worst(&target_healths);
                     let mut s = state.write().await;
-                    s.health = new_health;
+                    s.target_healths = target_healths;
+                    s.health = overall;
                     last_classify = Instant::now();
                 }
                 let snapshot = state.read().await;
