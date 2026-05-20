@@ -61,7 +61,7 @@ async fn run(state: Arc<RwLock<AppState>>, network_change: Arc<Notify>) {
                 drop(s);
                 if net_changed {
                     debug!("network change detected, notifying");
-                    network_change.notify_waiters();
+                    network_change.notify_one();
                 }
             }
             Err(e) => {

@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::state::{AppState, Target, default_targets};
 
-fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+fn init_logging(debug: bool) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let dir = dirs_log_dir()?;
     if std::fs::create_dir_all(&dir).is_err() {
         return None;
@@ -22,8 +22,13 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let file_appender = tracing_appender::rolling::never(&dir, "nstat.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-    let filter = EnvFilter::try_from_env("NSTAT_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("nstat=info,warn"));
+    // `--debug` takes precedence over NSTAT_LOG — easier than asking the user
+    // to remember the env var when they just want "show me everything".
+    let filter = if debug {
+        EnvFilter::new("nstat=debug")
+    } else {
+        EnvFilter::try_from_env("NSTAT_LOG").unwrap_or_else(|_| EnvFilter::new("nstat=info,warn"))
+    };
 
     let _ = tracing_subscriber::fmt()
         .with_writer(non_blocking)
@@ -53,6 +58,7 @@ fn install_panic_hook() {
 struct Cli {
     check: bool,
     help: bool,
+    debug: bool,
     targets: Vec<String>,
 }
 
@@ -60,12 +66,14 @@ fn parse_args() -> Cli {
     let mut cli = Cli {
         check: false,
         help: false,
+        debug: false,
         targets: Vec::new(),
     };
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--check" | "-c" => cli.check = true,
             "--help" | "-h" => cli.help = true,
+            "--debug" => cli.debug = true,
             _ => cli.targets.push(arg),
         }
     }
@@ -97,9 +105,9 @@ async fn resolve_targets(specs: &[String]) -> anyhow::Result<Vec<Target>> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _log_guard = init_logging();
-
     let cli = parse_args();
+    let _log_guard = init_logging(cli.debug);
+
     if cli.help {
         print_help();
         return Ok(());
@@ -119,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
     probe::icmp::spawn_all(state.clone()).await?;
     probe::http::spawn(state.clone()).await?;
     probe::pubnet::spawn(state.clone(), network_change.clone()).await?;
+    probe::netmon::spawn(network_change.clone()).await?;
     wifi::spawn(state.clone(), network_change.clone()).await?;
 
     let terminal = ratatui::init();
@@ -134,6 +143,7 @@ fn print_help() {
     println!("USAGE:");
     println!("    nstat [TARGETS]…           run the TUI");
     println!("    nstat --check [TARGETS]…   probe for ~8s, print summary, exit");
+    println!("    nstat --debug              verbose logging to ~/Library/Logs/nstat/nstat.log");
     println!("    nstat --help               show this message");
     println!();
     println!("TARGETS: IP addresses or hostnames to ping. Defaults to 1.1.1.1 and 8.8.8.8");
