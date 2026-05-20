@@ -2,6 +2,8 @@
 
 A terminal network-health monitor you can leave open during meetings. Shows current latency, packet loss, WiFi info, and a sliding-window line chart so you can spot trouble *before* a meeting falls apart.
 
+![nstat screenshot](docs/screenshot.png)
+
 ## What it does
 
 - Pings `1.1.1.1` and `8.8.8.8` once per second over **unprivileged ICMP** (no `sudo` required)
