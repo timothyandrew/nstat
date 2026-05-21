@@ -122,6 +122,16 @@ pub struct WifiInfo {
     pub tx_rate_mbps: Option<f64>,
 }
 
+/// The active wired link, populated only when WiFi isn't the connected
+/// interface. `link_speed` is already humanized (e.g. "1 Gbps").
+#[derive(Clone, Debug, Default)]
+pub struct EthernetInfo {
+    pub interface: Option<String>,
+    pub interface_label: Option<String>,
+    pub link_speed: Option<String>,
+    pub full_duplex: Option<bool>,
+}
+
 pub struct AppState {
     pub started_at: Instant,
     pub targets: Vec<Target>,
@@ -132,6 +142,7 @@ pub struct AppState {
     pub http_last_status: Option<HttpStatus>,
     pub http_last_check: Option<Instant>,
     pub wifi: WifiInfo,
+    pub ethernet: EthernetInfo,
     pub pubnet: PublicNet,
     pub health: Health,
     pub target_healths: Vec<Health>,
@@ -151,6 +162,7 @@ impl AppState {
             http_last_status: None,
             http_last_check: None,
             wifi: WifiInfo::default(),
+            ethernet: EthernetInfo::default(),
             pubnet: PublicNet::default(),
             health: Health::Unknown,
             target_healths: vec![Health::Unknown; n],

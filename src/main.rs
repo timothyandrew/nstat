@@ -188,6 +188,10 @@ async fn run_check(targets: Vec<Target>) -> anyhow::Result<()> {
         "wifi: iface={:?} ssid={:?} rssi={:?} ch={:?} phy={:?}",
         s.wifi.interface, s.wifi.ssid, s.wifi.rssi_dbm, s.wifi.channel, s.wifi.phy_mode
     );
+    println!(
+        "ethernet: iface={:?} speed={:?} duplex={:?}",
+        s.ethernet.interface, s.ethernet.link_speed, s.ethernet.full_duplex
+    );
     if s.wifi.interface.is_none() {
         match wifi::probe_once().await {
             Ok(info) => println!("[direct] {:?}", info),
