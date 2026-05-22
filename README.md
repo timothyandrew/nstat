@@ -10,7 +10,7 @@ A terminal network-health monitor you can leave open during meetings. Shows curr
 - Falls back to an HTTP probe against `captive.apple.com` when ICMP starts failing — distinguishes "this network blocks ICMP" from "actually offline"
 - Renders a line chart of latency with selectable windows (1m / 10m / 1h)
 - Shows aggregate stats: p50 / p95 / p99, packet loss %, uptime
-- Surfaces the active WiFi interface, SSID, RSSI, channel, PHY mode
+- Surfaces the active connection — WiFi (interface, SSID, RSSI, channel, PHY mode) or Ethernet (interface, link speed, duplex)
 - Classifies overall health (Healthy / Degraded / Bad / ICMP-blocked / Offline) and reflects it in colors across the header, chart border, and badge
 
 History is in-memory and session-only.

@@ -7,7 +7,7 @@ use tokio::sync::{Notify, RwLock};
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
-use crate::state::{AppState, WifiInfo};
+use crate::state::{AppState, EthernetInfo, WifiInfo};
 
 // system_profiler SPAirPortDataType is ~7s on macOS 15+, so polling faster than
 // that would just queue up redundant calls. Signal/channel rarely change.
@@ -28,15 +28,15 @@ pub async fn probe_once() -> anyhow::Result<WifiInfo> {
 }
 
 async fn run(state: Arc<RwLock<AppState>>, network_change: Arc<Notify>) {
-    info!("wifi worker started");
+    info!("link worker started");
     let mut ticker = interval(POLL_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         ticker.tick().await;
-        match query_wifi().await {
-            Ok(info) => {
-                debug!(?info, "wifi worker got info");
+        match query_link().await {
+            Ok((wifi_info, eth_info)) => {
+                debug!(?wifi_info, ?eth_info, "link worker got info");
                 let (prev_ssid, prev_iface, had_any) = {
                     let s = state.read().await;
                     (
@@ -49,12 +49,13 @@ async fn run(state: Arc<RwLock<AppState>>, network_change: Arc<Notify>) {
                 // Some(a)→Some(b)). Interface flips (en0→en1) are also a change.
                 // macOS redacts SSID without Location entitlement, so same-SSID
                 // roams (different BSSID) won't be caught here.
-                let ssid_changed = prev_ssid != info.ssid;
-                let iface_changed = prev_iface != info.interface;
+                let ssid_changed = prev_ssid != wifi_info.ssid;
+                let iface_changed = prev_iface != wifi_info.interface;
                 let net_changed = had_any && (ssid_changed || iface_changed);
 
                 let mut s = state.write().await;
-                s.wifi = info;
+                s.wifi = wifi_info;
+                s.ethernet = eth_info;
                 if net_changed {
                     s.push_marker(Instant::now());
                 }
@@ -65,10 +66,24 @@ async fn run(state: Arc<RwLock<AppState>>, network_change: Arc<Notify>) {
                 }
             }
             Err(e) => {
-                debug!(error = %e, "wifi query failed");
+                debug!(error = %e, "link query failed");
             }
         }
     }
+}
+
+/// Active-link metadata for one poll: WiFi details always, plus — when WiFi
+/// isn't the connected interface — the wired link's speed/duplex. The Ethernet
+/// probe is skipped entirely while WiFi is associated, since the header shows
+/// one or the other and never both.
+async fn query_link() -> anyhow::Result<(WifiInfo, EthernetInfo)> {
+    let wifi = query_wifi().await?;
+    let ethernet = if wifi.rssi_dbm.is_some() {
+        EthernetInfo::default()
+    } else {
+        query_ethernet().await.unwrap_or_default()
+    };
+    Ok((wifi, ethernet))
 }
 
 async fn query_wifi() -> anyhow::Result<WifiInfo> {
@@ -115,6 +130,103 @@ fn parse_hardware_port(text: &str, device: &str) -> Option<String> {
         }
     }
     None
+}
+
+// Reads the default-route interface and, when it's an active wired link,
+// reports its negotiated speed/duplex. Returns None when there's no default
+// route, the interface isn't up, or the interface is actually Wi-Fi (in which
+// case the WiFi path already owns it).
+async fn query_ethernet() -> Option<EthernetInfo> {
+    let iface = default_route_interface().await?;
+    let output = Command::new("ifconfig").arg(&iface).output().await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    let (link_speed, full_duplex) = parse_media(text)?;
+    let interface_label = lookup_hardware_port(&iface).await;
+    if interface_label.as_deref() == Some("Wi-Fi") {
+        return None;
+    }
+    Some(EthernetInfo {
+        interface: Some(iface),
+        interface_label,
+        link_speed,
+        full_duplex,
+    })
+}
+
+async fn default_route_interface() -> Option<String> {
+    let output = Command::new("route")
+        .args(["-n", "get", "default"])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    parse_route_interface(text)
+}
+
+fn parse_route_interface(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("interface:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Parse the `media:` and `status:` lines of `ifconfig <iface>` output.
+/// Returns the humanized link speed and duplex, or None when the interface
+/// isn't `status: active` (i.e. not a live wired link worth surfacing).
+fn parse_media(text: &str) -> Option<(Option<String>, Option<bool>)> {
+    let mut media: Option<&str> = None;
+    let mut active = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("media:") {
+            media = Some(rest.trim());
+        } else if let Some(rest) = line.strip_prefix("status:") {
+            active = rest.trim() == "active";
+        }
+    }
+    if !active {
+        return None;
+    }
+    let media = media?;
+    // The speed token is the one carrying "base" — e.g. "1000baseT",
+    // "100baseTX", "10Gbase-T". Some links (bridge members) report duplex
+    // without a speed; those just yield None for speed.
+    let speed = media
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
+        .find(|tok| tok.to_ascii_lowercase().contains("base"))
+        .map(human_link_speed);
+    let duplex = if media.contains("full-duplex") {
+        Some(true)
+    } else if media.contains("half-duplex") {
+        Some(false)
+    } else {
+        None
+    };
+    Some((speed, duplex))
+}
+
+/// Convert a BSD media speed token ("1000baseT", "10Gbase-T") into a friendly
+/// label ("1 Gbps", "10 Gbps"). Falls back to the raw token when unparseable.
+fn human_link_speed(token: &str) -> String {
+    let lower = token.to_ascii_lowercase();
+    let digits: String = lower.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let rest = &lower[digits.len()..];
+    match digits.parse::<u32>() {
+        // "10Gbase-T" — the digits are already gigabits.
+        Ok(n) if rest.starts_with('g') => format!("{n} Gbps"),
+        // Otherwise the digits are megabits; roll up to Gbps at 1000+.
+        Ok(n) if n >= 1000 => format!("{} Gbps", n as f64 / 1000.0),
+        Ok(n) => format!("{n} Mbps"),
+        Err(_) => token.to_string(),
+    }
 }
 
 fn parse_plist(bytes: &[u8]) -> anyhow::Result<WifiInfo> {
@@ -246,5 +358,44 @@ mod tests {
         assert_eq!(parse_hardware_port(text, "en0").as_deref(), Some("Wi-Fi"));
         assert_eq!(parse_hardware_port(text, "en1").as_deref(), Some("Ethernet"));
         assert_eq!(parse_hardware_port(text, "en99"), None);
+    }
+
+    #[test]
+    fn parses_route_interface() {
+        let text = "   route to: default\ndestination: default\n    gateway: 192.168.1.1\n  interface: en7\n      flags: <UP,GATEWAY,DONE>\n";
+        assert_eq!(parse_route_interface(text).as_deref(), Some("en7"));
+        assert_eq!(parse_route_interface("destination: default\n"), None);
+    }
+
+    #[test]
+    fn parses_active_ethernet_media() {
+        let text = "en7: flags=8863<UP,RUNNING> mtu 1500\n\tether 68:da:73:a8:7c:d1\n\tinet 192.168.1.49 netmask 0xffffff00\n\tmedia: autoselect (1000baseT <full-duplex>)\n\tstatus: active\n";
+        let (speed, duplex) = parse_media(text).expect("active link");
+        assert_eq!(speed.as_deref(), Some("1 Gbps"));
+        assert_eq!(duplex, Some(true));
+    }
+
+    #[test]
+    fn parse_media_skips_inactive() {
+        let text = "en0: flags=8863<UP> mtu 1500\n\tmedia: autoselect\n\tstatus: inactive\n";
+        assert!(parse_media(text).is_none());
+    }
+
+    #[test]
+    fn parse_media_active_without_speed() {
+        let text = "en1: flags=8963<UP> mtu 1500\n\tmedia: autoselect <full-duplex>\n\tstatus: active\n";
+        let (speed, duplex) = parse_media(text).expect("active link");
+        assert_eq!(speed, None);
+        assert_eq!(duplex, Some(true));
+    }
+
+    #[test]
+    fn humanizes_link_speed() {
+        assert_eq!(human_link_speed("1000baseT"), "1 Gbps");
+        assert_eq!(human_link_speed("100baseTX"), "100 Mbps");
+        assert_eq!(human_link_speed("10baseT/UTP"), "10 Mbps");
+        assert_eq!(human_link_speed("2500Base-T"), "2.5 Gbps");
+        assert_eq!(human_link_speed("10Gbase-T"), "10 Gbps");
+        assert_eq!(human_link_speed("weird"), "weird");
     }
 }

@@ -35,36 +35,72 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let wifi = &state.wifi;
-    let iface = wifi.interface.as_deref().unwrap_or("—");
-    let rssi = wifi
-        .rssi_dbm
-        .map(|v| format!("{} dBm", v))
-        .unwrap_or_else(|| "—".into());
-    let channel = wifi.channel.as_deref().unwrap_or("—");
-
-    let iface_display = match wifi.interface_label.as_deref() {
-        Some(label) => format!("{} ({})", label, iface),
-        None => iface.to_string(),
-    };
-
     let dim = Style::default().fg(Color::DarkGray);
+    let cyan_bold = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let nstat_badge = Style::default()
         .fg(badge_fg(state.health))
         .bg(h_color)
         .add_modifier(Modifier::BOLD);
 
-    let left = Line::from(vec![
+    // The left segment describes the active connection. WiFi RSSI/channel take
+    // priority when associated; otherwise fall back to the Ethernet link's
+    // speed/duplex. Sections with no data are dropped rather than shown as "—".
+    let wifi = &state.wifi;
+    let eth = &state.ethernet;
+    let on_wifi = wifi.rssi_dbm.is_some() || wifi.channel.is_some();
+
+    let (iface, iface_label, metrics): (Option<&str>, Option<&str>, Vec<Span<'static>>) =
+        if on_wifi {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if let Some(rssi) = wifi.rssi_dbm {
+                spans.push(Span::styled("RSSI ", dim));
+                spans.push(Span::raw(format!("{rssi} dBm")));
+            }
+            if let Some(ch) = wifi.channel.as_deref() {
+                if !spans.is_empty() {
+                    spans.push(Span::raw("  "));
+                }
+                spans.push(Span::styled("ch ", dim));
+                spans.push(Span::raw(ch.to_string()));
+            }
+            (wifi.interface.as_deref(), wifi.interface_label.as_deref(), spans)
+        } else if eth.interface.is_some() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if let Some(speed) = eth.link_speed.as_deref() {
+                spans.push(Span::styled("link ", dim));
+                spans.push(Span::raw(speed.to_string()));
+            }
+            if let Some(full) = eth.full_duplex {
+                if !spans.is_empty() {
+                    spans.push(Span::raw("  "));
+                }
+                spans.push(Span::styled(
+                    if full { "full-duplex" } else { "half-duplex" },
+                    dim,
+                ));
+            }
+            (eth.interface.as_deref(), eth.interface_label.as_deref(), spans)
+        } else {
+            (wifi.interface.as_deref(), wifi.interface_label.as_deref(), Vec::new())
+        };
+
+    let iface_display = match (iface_label, iface) {
+        (Some(label), Some(dev)) => format!("{label} ({dev})"),
+        (Some(label), None) => label.to_string(),
+        (None, Some(dev)) => dev.to_string(),
+        (None, None) => "—".to_string(),
+    };
+
+    let mut left_spans: Vec<Span<'static>> = vec![
         Span::styled(" nstat ", nstat_badge),
         Span::raw("  "),
-        Span::styled(iface_display, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
-        Span::styled("RSSI ", dim),
-        Span::raw(rssi),
-        Span::raw("  "),
-        Span::styled("ch ", dim),
-        Span::raw(channel),
-    ]);
+        Span::styled(iface_display, cyan_bold),
+    ];
+    if !metrics.is_empty() {
+        left_spans.push(Span::raw("  "));
+        left_spans.extend(metrics);
+    }
+    let left = Line::from(left_spans);
 
     let mid_spans: Vec<Span<'static>> = match (state.pubnet.isp.as_deref(), state.pubnet.ip.as_deref()) {
         (Some(isp), Some(ip)) => vec![
