@@ -73,15 +73,23 @@ async fn run(state: Arc<RwLock<AppState>>, network_change: Arc<Notify>) {
 }
 
 /// Active-link metadata for one poll: WiFi details always, plus — when WiFi
-/// isn't the connected interface — the wired link's speed/duplex. The Ethernet
-/// probe is skipped entirely while WiFi is associated, since the header shows
+/// isn't the active interface — the wired link's speed/duplex. The header shows
 /// one or the other and never both.
+///
+/// "Active" is decided by which interface owns the default route, not by
+/// whether WiFi is associated. With both adapters up, an associated-but-idle
+/// WiFi link still reports an RSSI, so keying off that would mislabel the
+/// connection whenever the macOS service order prefers Ethernet.
 async fn query_link() -> anyhow::Result<(WifiInfo, EthernetInfo)> {
     let wifi = query_wifi().await?;
-    let ethernet = if wifi.rssi_dbm.is_some() {
-        EthernetInfo::default()
-    } else {
-        query_ethernet().await.unwrap_or_default()
+    let default_iface = default_route_interface().await;
+    let wifi_is_active = match (default_iface.as_deref(), wifi.interface.as_deref()) {
+        (Some(d), Some(w)) => d == w,
+        _ => false,
+    };
+    let ethernet = match default_iface {
+        Some(iface) if !wifi_is_active => query_ethernet(&iface).await.unwrap_or_default(),
+        _ => EthernetInfo::default(),
     };
     Ok((wifi, ethernet))
 }
@@ -132,24 +140,23 @@ fn parse_hardware_port(text: &str, device: &str) -> Option<String> {
     None
 }
 
-// Reads the default-route interface and, when it's an active wired link,
-// reports its negotiated speed/duplex. Returns None when there's no default
-// route, the interface isn't up, or the interface is actually Wi-Fi (in which
-// case the WiFi path already owns it).
-async fn query_ethernet() -> Option<EthernetInfo> {
-    let iface = default_route_interface().await?;
-    let output = Command::new("ifconfig").arg(&iface).output().await.ok()?;
+// Given the default-route interface, reports its negotiated speed/duplex when
+// it's an active wired link. Returns None when the interface isn't up, or is
+// actually Wi-Fi (defensive: the caller only reaches here for a non-WiFi
+// default route, but `wifi.interface` can be None if parsing failed).
+async fn query_ethernet(iface: &str) -> Option<EthernetInfo> {
+    let output = Command::new("ifconfig").arg(iface).output().await.ok()?;
     if !output.status.success() {
         return None;
     }
     let text = std::str::from_utf8(&output.stdout).ok()?;
     let (link_speed, full_duplex) = parse_media(text)?;
-    let interface_label = lookup_hardware_port(&iface).await;
+    let interface_label = lookup_hardware_port(iface).await;
     if interface_label.as_deref() == Some("Wi-Fi") {
         return None;
     }
     Some(EthernetInfo {
-        interface: Some(iface),
+        interface: Some(iface.to_string()),
         interface_label,
         link_speed,
         full_duplex,

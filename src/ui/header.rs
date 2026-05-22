@@ -42,12 +42,14 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         .bg(h_color)
         .add_modifier(Modifier::BOLD);
 
-    // The left segment describes the active connection. WiFi RSSI/channel take
-    // priority when associated; otherwise fall back to the Ethernet link's
-    // speed/duplex. Sections with no data are dropped rather than shown as "—".
+    // The left segment describes the *active* connection. The link worker
+    // populates `ethernet` only when a wired link owns the default route, so
+    // its presence wins over an associated-but-idle WiFi adapter. WiFi
+    // RSSI/channel are shown when WiFi is the active link; otherwise the
+    // Ethernet link's speed/duplex. Empty sections are dropped, not shown "—".
     let wifi = &state.wifi;
     let eth = &state.ethernet;
-    let on_wifi = wifi.rssi_dbm.is_some() || wifi.channel.is_some();
+    let on_wifi = eth.interface.is_none() && (wifi.rssi_dbm.is_some() || wifi.channel.is_some());
 
     let (iface, iface_label, metrics): (Option<&str>, Option<&str>, Vec<Span<'static>>) =
         if on_wifi {
