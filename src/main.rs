@@ -82,7 +82,7 @@ fn parse_args() -> Cli {
 
 async fn resolve_targets(specs: &[String]) -> anyhow::Result<Vec<Target>> {
     if specs.is_empty() {
-        return Ok(default_targets());
+        return Ok(default_targets(wifi::default_gateway().await));
     }
     let mut out = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -146,8 +146,9 @@ fn print_help() {
     println!("    nstat --debug              verbose logging to ~/Library/Logs/nstat/nstat.log");
     println!("    nstat --help               show this message");
     println!();
-    println!("TARGETS: IP addresses or hostnames to ping. Defaults to 1.1.1.1 and 8.8.8.8");
-    println!("         when no targets are given. Hostnames are resolved once at startup.");
+    println!("TARGETS: IP addresses or hostnames to ping. Defaults to 1.1.1.1 and the");
+    println!("         default gateway when no targets are given. Hostnames are resolved");
+    println!("         once at startup.");
     println!();
     println!("KEYS:");
     println!("    w    cycle view (1m / 10m / 1h / recent list)");
