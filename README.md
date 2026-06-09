@@ -6,7 +6,7 @@ A terminal network-health monitor you can leave open during meetings. Shows curr
 
 ## What it does
 
-- Pings `1.1.1.1` and `8.8.8.8` once per second over **unprivileged ICMP** (no `sudo` required)
+- Pings `1.1.1.1` and the default gateway once per second over **unprivileged ICMP** (no `sudo` required)
 - Falls back to an HTTP probe against `captive.apple.com` when ICMP starts failing — distinguishes "this network blocks ICMP" from "actually offline"
 - Renders a line chart of latency with selectable windows (1m / 10m / 1h)
 - Shows aggregate stats: p50 / p95 / p99, packet loss %, uptime
@@ -26,7 +26,7 @@ cargo run --release
 ### Custom targets
 
 ```sh
-nstat                                 # defaults: 1.1.1.1 and 8.8.8.8
+nstat                                 # defaults: 1.1.1.1 and the default gateway
 nstat 9.9.9.9                         # single IP
 nstat 1.1.1.1 8.8.8.8 9.9.9.9         # multiple
 nstat one.one.one.one google.com      # hostnames (resolved at startup)

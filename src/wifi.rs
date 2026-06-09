@@ -185,6 +185,32 @@ fn parse_route_interface(text: &str) -> Option<String> {
     None
 }
 
+/// The default gateway's IP, parsed from `route -n get default`. Used as a
+/// default ping target so the LAN hop is monitored alongside the internet.
+pub async fn default_gateway() -> Option<std::net::IpAddr> {
+    let output = Command::new("route")
+        .args(["-n", "get", "default"])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    parse_route_gateway(text)
+}
+
+fn parse_route_gateway(text: &str) -> Option<std::net::IpAddr> {
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("gateway:") {
+            if let Ok(addr) = rest.trim().parse() {
+                return Some(addr);
+            }
+        }
+    }
+    None
+}
+
 /// Parse the `media:` and `status:` lines of `ifconfig <iface>` output.
 /// Returns the humanized link speed and duplex, or None when the interface
 /// isn't `status: active` (i.e. not a live wired link worth surfacing).
@@ -372,6 +398,16 @@ mod tests {
         let text = "   route to: default\ndestination: default\n    gateway: 192.168.1.1\n  interface: en7\n      flags: <UP,GATEWAY,DONE>\n";
         assert_eq!(parse_route_interface(text).as_deref(), Some("en7"));
         assert_eq!(parse_route_interface("destination: default\n"), None);
+    }
+
+    #[test]
+    fn parses_route_gateway() {
+        let text = "   route to: default\ndestination: default\n    gateway: 192.168.1.1\n  interface: en7\n      flags: <UP,GATEWAY,DONE>\n";
+        assert_eq!(
+            parse_route_gateway(text),
+            Some("192.168.1.1".parse().unwrap())
+        );
+        assert_eq!(parse_route_gateway("destination: default\n"), None);
     }
 
     #[test]

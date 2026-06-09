@@ -19,11 +19,12 @@ impl Target {
     }
 }
 
-pub fn default_targets() -> Vec<Target> {
-    vec![
-        Target::new("1.1.1.1", "1.1.1.1".parse().unwrap()),
-        Target::new("8.8.8.8", "8.8.8.8".parse().unwrap()),
-    ]
+pub fn default_targets(gateway: Option<IpAddr>) -> Vec<Target> {
+    let mut targets = vec![Target::new("1.1.1.1", "1.1.1.1".parse().unwrap())];
+    if let Some(gw) = gateway {
+        targets.push(Target::new("gateway", gw));
+    }
+    targets
 }
 
 #[derive(Clone, Copy, Debug)]
