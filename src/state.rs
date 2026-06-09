@@ -22,7 +22,7 @@ impl Target {
 pub fn default_targets(gateway: Option<IpAddr>) -> Vec<Target> {
     let mut targets = vec![Target::new("1.1.1.1", "1.1.1.1".parse().unwrap())];
     if let Some(gw) = gateway {
-        targets.push(Target::new("gateway", gw));
+        targets.push(Target::new(gw.to_string(), gw));
     }
     targets
 }
